@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#107c10">
+<title>APS Inventory - Stock</title>
+<link rel="manifest" href="./manifest.json">
+<style>
+  *{box-sizing:border-box;font-family: Segoe UI, sans-serif}
+  body{margin:0;background:#f3f2f1}
+  header{background:#0078d4;color:white;padding:12px;display:flex;align-items:center;gap:8px;position:sticky;top:0;z-index:10}
+  header h1{margin:0;font-size:18px;flex:1}
+  #search{width:100%;padding:10px 12px;font-size:16px;border:1px solid #8a8886;border-radius:4px}
+  .toolbar{display:flex;gap:8px;padding:8px;background:white;position:sticky;top:48px;z-index:9;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+  .toolbar button{flex:1;padding:10px;border:none;border-radius:4px;font-weight:600;cursor:pointer}
+  .btn-scan{background:#0078d4;color:white}
+  .btn-sync{background:#ffffff;border:1px solid #8a8886 !important}
+  #status{font-size:12px;color:#605e5c;padding:4px 8px}
+  .card{background:white;margin:8px;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.15);padding:12px;border-left:6px solid #107c10}
+  .card.critical{border-left-color:#d13438}
+  .card.warning{border-left-color:#ffaa44}
+  .card.ok{border-left-color:#107c10}
+  .card-top{display:flex;justify-content:space-between;align-items:center}
+  .material{font-weight:600;font-size:16px}
+  .machine{font-size:11px;background:#f3f2f1;padding:2px 6px;border-radius:10px}
+  .meta{font-size:12px;color:#605e5c;margin:4px 0}
+  .stock-row{display:flex;align-items:baseline;gap:8px}
+  .stock{font-size:28px;font-weight:700}
+  .stock.critical{color:#d13438}.stock.warning{color:#ffaa44}.stock.ok{color:#107c10}
+  .actions{display:flex;gap:6px;margin-top:8px}
+  .actions button{min-width:44px;padding:8px 10px;border:none;border-radius:4px;font-weight:700}
+  .minus{background:#fde7e9;color:#a4262c}.plus{background:#dff6dd;color:#107c10}
+  #detail{position:fixed;inset:0;background:white;z-index:20;display:none;overflow:auto}
+  #detail header{background:#323130}
+  .detail-body{padding:16px}
+  .detail-qty{font-size:48px;font-weight:700;text-align:center;margin:12px 0}
+  .stepper{display:flex;gap:8px;justify-content:center;margin:12px 0}
+  .stepper button{width:64px;height:48px;font-size:20px}
+  input[type=number]{width:100%;padding:10px;font-size:16px;text-align:center}
+  .save{width:100%;padding:14px;background:#107c10;color:white;border:none;border-radius:4px;font-size:16px;font-weight:600;margin-top:12px}
+  #reader{width:100%;max-width:400px;margin:8px auto;display:none}
+  .filter-bar{display:flex;gap:6px;padding:4px 8px;overflow-x:auto;background:white}
+  .filter-bar button{white-space:nowrap;padding:6px 10px;border-radius:16px;border:1px solid #8a8886;background:white;font-size:12px}
+  .filter-bar button.active{background:#0078d4;color:white;border-color:#0078d4}
+</style>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>APS Stock</h1>
+  <span id="user"></span>
+</header>
+<div style="padding:8px;background:white"><input id="search" placeholder="Search Material, Part #, Vendor, Machine..."></div>
+<div class="filter-bar" id="filters">
+  <button data-filter="all" class="active">All</button>
+  <button data-filter="critical">Critical</button>
+  <button data-filter="warning">Low</button>
+  <button data-filter="machine">Machine</button>
+</div>
+<div class="toolbar">
+  <button class="btn-scan" onclick="toggleScan()">📷 Scan</button>
+  <button class="btn-sync" onclick="loadData()">↻ Sync</button>
+</div>
+<div id="reader"></div>
+<div id="status"></div>
+<div id="list"></div>
+
+<div id="detail">
+  <header><button onclick="closeDetail()" style="background:none;border:none;color:white;font-size:18px">✕</button><h1 style="margin:0 0 0 12px">Adjust Stock</h1></header>
+  <div class="detail-body">
+    <div id="d-material" style="font-weight:600;font-size:18px"></div>
+    <div id="d-meta" style="color:#605e5c;font-size:13px"></div>
+    <div class="detail-qty" id="d-qty"></div>
+    <div style="text-align:center;color:#605e5c" id="d-unit"></div>
+    <div class="stepper">
+      <button class="minus" onclick="adj(-5)">−5</button>
+      <button class="minus" onclick="adj(-1)">−1</button>
+      <button class="plus" onclick="adj(1)">+1</button>
+      <button class="plus" onclick="adj(5)">+5</button>
+    </div>
+    <label>New Quantity</label>
+    <input type="number" id="d-input">
+    <label style="margin-top:8px;display:block">Reason (optional)</label>
+    <input id="d-reason" placeholder="Consumed for job, restocked...">
+    <button class="save" onclick="saveStock()">Save Update</button>
+    <div style="margin-top:12px;font-size:12px;color:#605e5c" id="d-notes"></div>
+  </div>
+</div>
+
+<script>
+// ===== CONFIG - auto-detect site URL when hosted in SharePoint =====
+const SITE_URL = (window._spPageContextInfo && _spPageContextInfo.webAbsoluteUrl) ? _spPageContextInfo.webAbsoluteUrl : "https://argonnedoe.sharepoint.com/sites/APSDesigners";
+const LIST_NAME = "AM_LAB_INVENTORY";
+const FIELDS = {
+  Material: "LinkTitle", // display "Material" maps to internal LinkTitle (Title is also available but empty)
+  PartNumber: "PartNumber", // was Part_x0020_Number, actual is PartNumber per console table
+  TrackingUnit: "TrackingUnit",
+  CurrentStock: "CurrentStock",
+  SoftWarningLevel: "SoftWarningLevel",
+  CriticalLevel: "CriticalLevel",
+  DesiredRestock: "DesiredRestock",
+  Machine: "Machine",
+  Vendor: "Vendor",
+  OrderingNotes: "OrderingNotes", // was Ordering_x0020_Notes
+  // Optional extra: Quantity field exists in list - not used for display
+};
+const USE_MOCK = false; // set true to test UI without SharePoint
+
+let items = [];
+let current = null;
+let html5Qrcode = null;
+
+async function getDigest(){
+  const r = await fetch(`${SITE_URL}/_api/contextinfo`, {method:"POST", credentials:"include", headers:{Accept:"application/json;odata=verbose"}});
+  if(!r.ok) throw new Error("contextinfo failed " + r.status);
+  const j = await r.json();
+  return j.d.GetContextWebInformation.FormDigestValue;
+}
+
+async function loadData(){
+  const status = document.getElementById("status");
+  status.textContent = `Syncing from ${SITE_URL} ...`;
+  try{
+    if(USE_MOCK){
+      items = mockItems();
+    } else {
+      const select = ["ID","Title", ...Object.values(FIELDS)].join(",");
+      const url = `${SITE_URL}/_api/web/lists/getbytitle('${LIST_NAME}')/items?$select=${select}&$top=200`;
+      console.log("Fetching:", url);
+      const r = await fetch(url, {credentials:"include", headers:{Accept:"application/json;odata=nometadata"}});
+      const text = await r.text();
+      console.log("Status:", r.status, text.slice(0,500));
+      if(!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0,800)} URL: ${url}`);
+      const j = JSON.parse(text);
+      items = j.value;
+    }
+    status.textContent = `Loaded ${items.length} items`;
+    render();
+  } catch(e){
+    status.textContent = "Sync failed: " + e.message;
+    console.error(e);
+    // diagnostic hint
+    if(e.message.includes("Failed to fetch")){
+      status.textContent += " | Check F12 Console > Network tab for _api call - likely blocked by SharePoint HTML Field Security or need to open via .../SiteAssets/aps-stock/index.html?web=1";
+    }
+  }
+}
+
+function mockItems(){
+  return [
+    {ID:1, LinkTitle:"M6x20 Socket Head Cap Screw", PartNumber:"SHCS-M6-20", TrackingUnit:"ea", CurrentStock:8, SoftWarningLevel:20, CriticalLevel:5, DesiredRestock:50, Machine:"CNC-1", Vendor:"McMaster", OrderingNotes:"Box of 50"},
+    {ID:2, LinkTitle:"Isopropyl Alcohol 1L", PartNumber:"IPA-1L", TrackingUnit:"bottle", CurrentStock:3, SoftWarningLevel:4, CriticalLevel:2, DesiredRestock:10, Machine:"Cleanroom", Vendor:"Fischer", OrderingNotes:""},
+    {ID:3, LinkTitle:"Kapton Tape 2in", PartNumber:"KAP-2IN", TrackingUnit:"roll", CurrentStock:25, SoftWarningLevel:5, CriticalLevel:2, DesiredRestock:12, Machine:"All", Vendor:"Amazon", OrderingNotes:""},
+  ];
+}
+
+function stockState(it){
+  const cur = Number(it[FIELDS.CurrentStock] ?? 0);
+  const crit = Number(it[FIELDS.CriticalLevel] ?? 0);
+  const warn = Number(it[FIELDS.SoftWarningLevel] ?? 0);
+  if(cur <= crit) return "critical";
+  if(cur <= warn) return "warning";
+  return "ok";
+}
+
+function render(){
+  const q = document.getElementById("search").value.toLowerCase();
+  const active = document.querySelector("#filters button.active")?.dataset.filter || "all";
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  let filtered = items.filter(it=>{
+    const hay = [it[FIELDS.Material], it[FIELDS.PartNumber], it[FIELDS.Vendor], it[FIELDS.Machine]].join(" ").toLowerCase();
+    if(q && !hay.includes(q)) return false;
+    const st = stockState(it);
+    if(active==="critical" && st!=="critical") return false;
+    if(active==="warning" && st!=="warning") return false;
+    return true;
+  });
+  filtered.forEach(it=>{
+    const st = stockState(it);
+    const card = document.createElement("div");
+    card.className = `card ${st}`;
+    card.onclick = ()=>openDetail(it);
+    card.innerHTML = `
+      <div class="card-top"><div class="material">${it[FIELDS.Material]||"(no name)"}</div><div class="machine">${it[FIELDS.Machine]||""}</div></div>
+      <div class="meta">Part: <b>${it[FIELDS.PartNumber]||""}</b> · ${it[FIELDS.Vendor]||""}</div>
+      <div class="stock-row"><div class="stock ${st}">${it[FIELDS.CurrentStock]??0}</div><div>${it[FIELDS.TrackingUnit]||""}</div><div style="margin-left:auto;font-size:12px;color:#605e5c">Warn &lt;${it[FIELDS.SoftWarningLevel]||"-"} Crit &lt;${it[FIELDS.CriticalLevel]||"-"} · Restock ${it[FIELDS.DesiredRestock]||"-"}</div></div>
+      <div class="actions">
+        <button class="minus" onclick="event.stopPropagation();quickUpdate(${it.ID}, -1)">−1</button>
+        <button class="minus" onclick="event.stopPropagation();quickUpdate(${it.ID}, -5)">−5</button>
+        <button class="plus" onclick="event.stopPropagation();quickUpdate(${it.ID}, 1)">+1</button>
+        <button class="plus" onclick="event.stopPropagation();quickUpdate(${it.ID}, 5)">+5</button>
+        <button style="margin-left:auto;background:white;border:1px solid #8a8886" onclick="event.stopPropagation();openDetail(items.find(x=>x.ID===${it.ID}))">Edit</button>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+
+function openDetail(it){
+  current = it;
+  document.getElementById("d-material").textContent = it[FIELDS.Material];
+  document.getElementById("d-meta").textContent = `${it[FIELDS.PartNumber]||""} · ${it[FIELDS.Vendor]||""} · ${it[FIELDS.Machine]||""}`;
+  document.getElementById("d-qty").textContent = it[FIELDS.CurrentStock];
+  document.getElementById("d-qty").className = "detail-qty " + stockState(it);
+  document.getElementById("d-unit").textContent = it[FIELDS.TrackingUnit] || "";
+  document.getElementById("d-input").value = it[FIELDS.CurrentStock];
+  document.getElementById("d-notes").textContent = it[FIELDS.OrderingNotes] ? "Notes: " + it[FIELDS.OrderingNotes] : "";
+  document.getElementById("detail").style.display = "block";
+}
+function closeDetail(){ document.getElementById("detail").style.display="none"; current=null;}
+function adj(d){ const inp=document.getElementById("d-input"); inp.value = (parseInt(inp.value||0)+d); }
+
+async function quickUpdate(id, delta){
+  const it = items.find(x=>x.ID===id);
+  if(!it) return;
+  const newVal = Number(it[FIELDS.CurrentStock]||0) + delta;
+  await doUpdate(it, newVal);
+}
+async function saveStock(){
+  if(!current) return;
+  const newVal = Number(document.getElementById("d-input").value);
+  await doUpdate(current, newVal);
+  closeDetail();
+}
+async function doUpdate(it, newVal){
+  const status = document.getElementById("status");
+  status.textContent = `Updating ${it[FIELDS.Material]} -> ${newVal}...`;
+  try{
+    if(USE_MOCK){ it[FIELDS.CurrentStock]=newVal; render(); status.textContent="Mock updated"; return; }
+    const digest = await getDigest();
+    const url = `${SITE_URL}/_api/web/lists/getbytitle('${LIST_NAME}')/items(${it.ID})`;
+    const r = await fetch(url, {
+      method:"POST", credentials:"include",
+      headers:{
+        Accept:"application/json;odata=nometadata",
+        "Content-Type":"application/json;odata=verbose",
+        "X-RequestDigest": digest,
+        "X-HTTP-Method":"MERGE",
+        "If-Match":"*"
+      },
+      body: JSON.stringify({ [FIELDS.CurrentStock]: newVal })
+    });
+    if(!r.ok) throw new Error(await r.text());
+    it[FIELDS.CurrentStock]=newVal;
+    render();
+    status.textContent = "Updated";
+  } catch(e){ status.textContent="Update failed: "+e.message; alert(status.textContent); }
+}
+
+document.getElementById("search").addEventListener("input", render);
+document.querySelectorAll("#filters button").forEach(b=>b.addEventListener("click", e=>{
+  document.querySelectorAll("#filters button").forEach(x=>x.classList.remove("active"));
+  e.target.classList.add("active"); render();
+}));
+
+function toggleScan(){
+  const el = document.getElementById("reader");
+  if(el.style.display==="block"){ stopScan(); return; }
+  el.style.display="block";
+  html5Qrcode = new Html5Qrcode("reader");
+  html5Qrcode.start({facingMode:"environment"}, {fps:10, qrbox:250},
+    decoded=>{
+      document.getElementById("search").value = decoded;
+      stopScan(); render();
+      const hit = items.find(it=> (it[FIELDS.PartNumber]||"").toLowerCase()===decoded.toLowerCase());
+      if(hit) openDetail(hit);
+    }, ()=>{}
+  ).catch(err=>{ document.getElementById("status").textContent="Camera failed: "+err; });
+}
+function stopScan(){
+  if(html5Qrcode){ html5Qrcode.stop().catch(()=>{}); html5Qrcode=null; }
+  document.getElementById("reader").style.display="none";
+}
+
+loadData();
+</script>
+</body>
+</html>
